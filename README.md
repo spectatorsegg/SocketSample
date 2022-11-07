@@ -1,2 +1,2 @@
-# SocketSample
-Sample code for C language Socket Programming
+# Socket Programming using C language.  
+ 
