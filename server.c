@@ -7,6 +7,7 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <unistd.h>
+#include <pthread.h>
 #include "config.h"
 
 /* Definition */
@@ -14,6 +15,8 @@
 
 /* Prototype */
 ssize_t send_file(int sockfd, FILE *fp);
+void *server_thread(void *arg);
+
 
 int main(int argc, char *argv[]) 
 {
@@ -22,10 +25,7 @@ int main(int argc, char *argv[])
     struct sockaddr_in client;
     int len;
     int sock0;
-    char fname[] = "testimage.jpg";
-    char buff[30] = {0};
-    FILE *fp;
-    ssize_t send_size;
+    pthread_t th;
 
     /* Create an endpoint for communication */
     sock = socket(AF_INET, SOCK_STREAM, 0);
@@ -51,19 +51,47 @@ int main(int argc, char *argv[])
 
     /* Accept a connetion on the socket */
     len = sizeof(client);
-    sock0 = accept(sock, (struct sockaddr*)&client, (socklen_t*)&len);
-    if (sock0 == -1) {
-        perror("accept error");
-        exit(1);
+
+    while(1) {
+        sock0 = accept(sock, (struct sockaddr*)&client, (socklen_t*)&len);
+        if (sock0 == -1) {
+            perror("accept error");
+            exit(1);
+        }
+
+        printf("pthread_create\n");
+        if (pthread_create(&th, NULL, server_thread, (void*)&sock0) != 0) {
+            perror("pthread_create error");
+            exit(1);
+        }
     }
+    close(sock);
+
+    return 0;
+}
+
+/* Thread */
+void *server_thread(void *arg)
+{
+    int *sock0;
+    char fname[] = "testimage.jpg";
+    char buff[30] = {0};
+    FILE *fp;
+    ssize_t send_size;
+
+    printf("server_thread\n");
+    (void)pthread_detach(pthread_self());
+    sock0 = (int*)arg;
 
     /* Send the name of the file to be transferred */
     strncpy(buff, fname, ARRAY_SIZE(fname));
-    if (send(sock0, buff, sizeof(buff), 0) == -1) {
+    printf("send\n");
+    if (send(*sock0, buff, sizeof(buff), 0) == -1) {
         perror("send filename error");
         exit(1);
     }
     
+    printf("fopen\n");
     /* Open the file to be transferred */
     fp = fopen(fname, "rb");
     if (fp == NULL) {
@@ -72,7 +100,7 @@ int main(int argc, char *argv[])
     }
 
     /* Read and send data */
-    send_size = send_file(sock0, fp);
+    send_size = send_file(*sock0, fp);
     if (send_size <= 0) {
         printf("Send failed\n");
     } else {
@@ -80,10 +108,8 @@ int main(int argc, char *argv[])
     }
 
     fclose(fp);
-    close(sock0);
-    close(sock);
-
-    return 0;
+    close(*sock0);
+    pthread_exit((void*)0);
 }
 
 /* Read and send data */
