@@ -17,6 +17,10 @@ int main(void)
 {
     struct sockaddr_in server;
     int sock;
+    char buff[100] = {0};
+    int pnum;
+    int tnum;
+
     char fname[30] = {0};
     char recv_fname[50] = "rcv_";
     FILE *fp;
@@ -35,7 +39,43 @@ int main(void)
     server.sin_addr.s_addr = inet_addr(SERVER_IP);
     if (connect(sock, (struct sockaddr*)&server, sizeof(server)) == -1) {
         perror("connect error");
-        exit(1);
+        goto exit;
+    }
+
+    while (1) {
+        /* Receive a message from the server */
+        printf("receive usage\n");
+        memset(buff, 0, sizeof(buff));
+        if (recv(sock, (void*)buff, sizeof(buff), 0) == -1) 
+        {
+            perror("recv error");
+            goto exit;
+        }
+        printf("%s\n", buff);
+ 
+        /* Wait for input from stdin */
+        pnum = getchar();
+
+        /* Send photo number */
+        if (send(sock, (void*)&pnum, sizeof(pnum), 0) == -1) {
+            perror("send photo number error");
+            goto exit;
+        }
+
+        /* Receive a reply from the server */
+        memset(buff, 0, sizeof(buff));
+        if (recv(sock, (void*)buff, sizeof(buff), 0) == -1) 
+        {
+            perror("recv error");
+            goto exit;
+        }
+
+        if (strncmp(buff, "Request accepted.", 17) == 0) {
+            printf("Request accepted.\n");
+            break;
+        } else {
+            printf("%s\n\n", buff);
+        }
     }
 
     /* Receive the name of the file to be transferred */
@@ -63,6 +103,8 @@ int main(void)
     }
     
     fclose(fp);
+
+exit:
     close(sock);
 
     /* Display image */
