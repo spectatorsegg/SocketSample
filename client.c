@@ -10,27 +10,40 @@
 #include "config.h"
 #include "opencv_test.h"
 
-/* Prototype */
-ssize_t recv_file(int sockfd, FILE *fp);
+/* wolfSSL */
+#include <wolfssl/options.h>
+#include <wolfssl/ssl.h>
+#include <wolfssl/wolfio.h>
+#include <wolfssl/wolfcrypt/error-crypt.h>
 
-int main(void)
+/* Definition */
+#define EMSG(msg)   (fprintf(stderr, msg))
+#define CERT_FILE "./certs/client-cert.pem"
+#define KEY_FILE  "./certs/client-key.pem"
+#define CA_FILE   "./certs/ca-cert.pem"
+
+int recv_file(WOLFSSL *ssl, FILE *fp);
+
+/* Main function */
+int main(int argc, char *argv[]) 
 {
     struct sockaddr_in server;
     int sock;
     char buff[100] = {0};
     int pnum;
-    int tnum;
 
     char fname[30] = {0};
-    char recv_fname[50] = "rcv_";
+    char recv_fname[40] = "rcv_";
     FILE *fp;
-    ssize_t recv_size;
+    int recv_size;
 
+    WOLFSSL_CTX* ctx = NULL;
+    WOLFSSL*     ssl = NULL;
+ 
      /* Create an endpoint for communication */
-    sock = socket(AF_INET, SOCK_STREAM, 0);
-    if (sock == -1) {
-        perror("socket error");
-        exit(1);
+    if ((sock = socket(AF_INET, SOCK_STREAM, 0)) == -1) {
+        EMSG("ERROR: Failed to create a socket.\n");
+        goto exit1;
     }
 
     /* Initiate a connecion on the socket */
@@ -38,18 +51,65 @@ int main(void)
     server.sin_port = htons(TEST_PORT);
     server.sin_addr.s_addr = inet_addr(SERVER_IP);
     if (connect(sock, (struct sockaddr*)&server, sizeof(server)) == -1) {
-        perror("connect error");
-        goto exit;
+        EMSG("ERROR: Failed to connect.\n");
+        goto exit2;
+    }
+
+    /* Initialize wolfSSL */
+    if (wolfSSL_Init() != WOLFSSL_SUCCESS) {
+        EMSG("ERROR: Failed to initialize the library.\n");
+        goto exit2;
+    }
+
+    /* Create and initialize WOLFSSL_CTX */
+    if ((ctx = wolfSSL_CTX_new(wolfTLSv1_3_client_method())) == NULL) {
+        EMSG("ERROR: failed to create WOLFSSL_CTX.\n");
+        goto exit2;
+    }
+
+    /* Load client certificate into WOLFSSL_CTX */
+    if (wolfSSL_CTX_use_certificate_file(ctx, CERT_FILE, WOLFSSL_FILETYPE_PEM) != WOLFSSL_SUCCESS) {
+        EMSG("ERROR: failed to load the certificate file.\n");
+        goto exit3;
+    }
+
+    /* Load client key into WOLFSSL_CTX */
+    if (wolfSSL_CTX_use_PrivateKey_file(ctx, KEY_FILE, WOLFSSL_FILETYPE_PEM) != WOLFSSL_SUCCESS) {
+        EMSG("ERROR: failed to load the key file.\n");
+        goto exit3;
+    }
+
+    /* Load CA certificate into WOLFSSL_CTX */
+    if (wolfSSL_CTX_load_verify_locations(ctx, CA_FILE, NULL) != WOLFSSL_SUCCESS) {
+        EMSG("ERROR: failed to load the CA file.\n");
+        goto exit3;
+    }
+
+    /* Create a WOLFSSL object */
+    if ((ssl = wolfSSL_new(ctx)) == NULL) {
+        EMSG("ERROR: failed to create WOLFSSL object.\n");
+        goto exit3;
+    }
+
+    /* Attach wolfSSL to the socket */
+    if (wolfSSL_set_fd(ssl, sock) != WOLFSSL_SUCCESS) {
+        EMSG("ERROR: Failed to set the file descriptor.\n");
+        goto exit3;
+    }
+
+    /* Connect to wolfSSL on the server side */
+    if (wolfSSL_connect(ssl) != WOLFSSL_SUCCESS) {
+        EMSG("ERROR: failed to connect to wolfSSL.\n");
+        goto exit3;
     }
 
     while (1) {
         /* Receive a message from the server */
         printf("receive usage\n");
         memset(buff, 0, sizeof(buff));
-        if (recv(sock, (void*)buff, sizeof(buff), 0) == -1) 
-        {
-            perror("recv error");
-            goto exit;
+        if (wolfSSL_read(ssl, (void*)buff, sizeof(buff)) < 0) {
+            EMSG("ERROR: failed to recieve.\n");
+            goto exit3;
         }
         printf("%s\n", buff);
  
@@ -57,17 +117,16 @@ int main(void)
         pnum = getchar();
 
         /* Send photo number */
-        if (send(sock, (void*)&pnum, sizeof(pnum), 0) == -1) {
-            perror("send photo number error");
-            goto exit;
+        if (wolfSSL_write(ssl, (void*)&pnum, sizeof(pnum)) != sizeof(pnum)) {
+            EMSG("ERROR: failed to send photo number.\n");
+            goto exit3;
         }
 
         /* Receive a reply from the server */
         memset(buff, 0, sizeof(buff));
-        if (recv(sock, (void*)buff, sizeof(buff), 0) == -1) 
-        {
-            perror("recv error");
-            goto exit;
+        if (wolfSSL_read(ssl, (void*)buff, sizeof(buff)) < 0) {
+            EMSG("ERROR: failed to recieve.\n");
+            goto exit3;
         }
 
         if (strncmp(buff, "Request accepted.", 17) == 0) {
@@ -78,66 +137,94 @@ int main(void)
         }
     }
 
+    if (pnum == '0') {
+        goto exit3;
+    }
+
     /* Receive the name of the file to be transferred */
-    if (recv(sock, (void*)fname, sizeof(fname), 0) == -1) 
-    {
-        perror("recv error");
-        exit(1);
+    if (wolfSSL_read(ssl, (void*)fname, sizeof(fname)) < 0) {
+        EMSG("ERROR: failed to recieve.\n");
+        goto exit3;
     }
 
     /* Create a file to save received data */
     strcat(recv_fname, fname);
     fp = fopen(recv_fname, "wb");
-    if (fp == NULL) 
-    {
-        perror("fopen error");
-        exit(1);
+    if (fp == NULL) {
+        EMSG("ERROR: failed to open the file.\n");
+        goto exit3;
     }
+
+    /* Receive the size of file */
+    if (wolfSSL_read(ssl, (void*)&pnum, sizeof(pnum)) < 0) {
+        EMSG("ERROR: failed to recieve.\n");
+        goto exit3;
+    }
+    printf("File size = %d\n", pnum);
     
-    /* Receive and save data */
-    recv_size = recv_file(sock, fp);
+    /* Receive image data */
+    recv_size = recv_file(ssl, fp);
     if (recv_size <= 0) {
         printf("Receive failed\n");
     } else {
-        printf("Receive success, NumBytes = %ld\n", recv_size);
+        printf("Receive success, NumBytes = %d\n", recv_size);
     }
     
     fclose(fp);
 
-exit:
-    close(sock);
-
     /* Display image */
     DisplayImage((const char*)recv_fname);
 
+exit3:
+    if (ssl) {
+        wolfSSL_free(ssl);      /* Free the wolfSSL object                  */
+    }
+    if (ctx) {
+        wolfSSL_CTX_free(ctx);  /* Free the wolfSSL context object          */
+    }
+    wolfSSL_Cleanup();          /* Cleanup the wolfSSL environment          */
+
+exit2:
+    close(sock);
+
+exit1:
     return 0;
 }
 
 
 /* Receive and save data */
-ssize_t recv_file(int sockfd, FILE *fp)
+int recv_file(WOLFSSL *ssl, FILE *fp)
 {
-    ssize_t recv_size;
-    ssize_t total_size = 0;
+    int recv_size;
+    int total_size = 0;
     char buff[BUFF_SIZE] = {0};
+    int err;
+    char err_msg[80];
 
+    sleep(1);
     do {
         /* Receive file data */
-        recv_size = recv(sockfd, buff, sizeof(buff), 0);
-        if (recv_size == -1) {
-           perror("recv error");
-           total_size = -1;
-           break;
+        if ((recv_size = wolfSSL_read(ssl, (void*)buff, sizeof(buff))) < 0) {
+            printf("recv_size = %d\n", recv_size);
+            err = wolfSSL_get_error(ssl, 0);
+            wolfSSL_ERR_error_string(err, err_msg);
+            printf("err = %d, %s\n", err, err_msg);
+ //           fprintf(stderr, "wolfSSL_read error = %d\n",
+ //               wolfSSL_get_error(ssl, recv_size));
+            
+//            perror("recv error");
+//            total_size = -1;
+//            break;
         }
  
         /* Save data to the file */
         if (fwrite(buff, sizeof(char), recv_size, fp) != (size_t)recv_size) {
-            perror("fwrite error");
+            EMSG("ERROR: failed to write.\n");
             total_size = -1;
             break;
         }
 
-        printf("recv_size = %ld\n", recv_size);
+        printf("recv_size = %d\n", recv_size);
  
         memset(buff, 0, BUFF_SIZE);
         
@@ -147,5 +234,3 @@ ssize_t recv_file(int sockfd, FILE *fp)
 
     return total_size;
 }
-
-

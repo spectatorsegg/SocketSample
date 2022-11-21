@@ -9,24 +9,34 @@
 #include <unistd.h>
 #include <pthread.h>
 #include "config.h"
+#include <sys/stat.h>
+
+/* wolfSSL */
+#include <wolfssl/options.h>
+#include <wolfssl/ssl.h>
+#include <wolfssl/wolfio.h>
+#include <wolfssl/wolfcrypt/error-crypt.h>
 
 /* Definition */
 #define MAX_QUEUE   5
 #define MAX_THREADS 5
-#define ARRAY_SIZE(arr) (sizeof(arr) / sizeof(arr)[0])
+#define EMSG(msg)   (fprintf(stderr, msg))
+
+#define CERT_FILE "./certs/server-cert.pem"
+#define KEY_FILE  "./certs/server-key.pem"
+#define CA_FILE   "./certs/client-cert.pem"
 
 struct tharg {
     int          open;
     pthread_t    tid;
     int          num;
     int          connd;
-//    WOLFSSL_CTX* ctx;
+    WOLFSSL_CTX* ctx;
     int*         shutdown;
 };
 
 void *server_thread(void *arg);
-ssize_t send_file(int sockfd, FILE *fp);
-
+int send_file(WOLFSSL *ssl, FILE *fp);
 
 /* Main function */
 int main(int argc, char *argv[]) 
@@ -39,33 +49,76 @@ int main(int argc, char *argv[])
     struct tharg thread[MAX_THREADS];
     int i;
     int shutdown = 0;
+    WOLFSSL_CTX* ctx = NULL;
 
     /* Create an endpoint for communication */
-    sock = socket(AF_INET, SOCK_STREAM, 0);
-    if (sock == -1) {
-        perror("socket error");
-        exit(1);
+    if ((sock = socket(AF_INET, SOCK_STREAM, 0)) == -1) { 
+        EMSG("ERROR: Failed to create a socket.\n");
+        goto exit1;
     }
+
+    /* Set the socket options to use nonblocking I/O */
+ #if 0
+    if ((fcntl(sock, F_SETFL, O_NONBLOCK)) == -1) {
+        perror("fcntl error");
+        ret = -1;
+        goto exit;
+    }
+#endif
 
     /* Bind a name to the socket */
     addr.sin_family = AF_INET;
     addr.sin_port = htons(TEST_PORT);
     addr.sin_addr.s_addr = INADDR_ANY;
     if (bind(sock, (const struct sockaddr *)&addr, sizeof(addr)) == -1) {
-        perror("bind error");
-        goto exit;
+        EMSG("ERROR: Failed to bind.\n");
+        goto exit2;
     }
 
     /* Listen for connections on the socket */
     if (listen(sock, MAX_QUEUE) == -1) {
-        perror("listen error");
-        goto exit;
+        EMSG("ERROR: Failed to listen.\n");
+        goto exit2;
+    }
+
+     /* Initialize wolfSSL */
+    if (wolfSSL_Init() != WOLFSSL_SUCCESS) {
+        EMSG("ERROR: Failed to initialize the library.\n");
+        goto exit2;
+    }
+
+    /* Create and initialize WOLFSSL_CTX */
+    if ((ctx = wolfSSL_CTX_new(wolfTLSv1_3_server_method())) == NULL) {
+        EMSG("ERROR: failed to create WOLFSSL_CTX.\n");
+        goto exit2;
+    }
+
+    /* Require mutual authentication */
+    wolfSSL_CTX_set_verify(ctx, WOLFSSL_VERIFY_PEER | WOLFSSL_VERIFY_FAIL_IF_NO_PEER_CERT, NULL);
+
+    /* Load server certificates into WOLFSSL_CTX */
+    if (wolfSSL_CTX_use_certificate_file(ctx, CERT_FILE, WOLFSSL_FILETYPE_PEM) != WOLFSSL_SUCCESS) {
+        EMSG("ERROR: failed to load the certificate file.\n");
+        goto exit3;
+    }
+
+    /* Load server key into WOLFSSL_CTX */
+    if (wolfSSL_CTX_use_PrivateKey_file(ctx, KEY_FILE, WOLFSSL_FILETYPE_PEM) != WOLFSSL_SUCCESS) {
+        EMSG("ERROR: failed to load the key file.\n");
+        goto exit3;
+    }
+
+    /* Load client certificate as "trusted" into WOLFSSL_CTX */
+    if (wolfSSL_CTX_load_verify_locations(ctx, CA_FILE, NULL) != WOLFSSL_SUCCESS) {
+        EMSG("ERROR: failed to load the CA file.\n");
+        goto exit3;
     }
 
     /* Initialize thread array */
     for (i = 0; i < MAX_THREADS; i++) {
         thread[i].open = 1;
         thread[i].num = i;
+        thread[i].ctx = ctx;
         thread[i].shutdown = &shutdown;
     }
 
@@ -78,10 +131,10 @@ int main(int argc, char *argv[])
         }
     
         /* Accept a connetion on the socket */
-        sock0 = accept(sock, (struct sockaddr*)&client, (socklen_t*)&len);
-        if (sock0 == -1) {
-            perror("accept error");
-            goto exit;
+        printf("wait for connection from clients...\n");
+        if ((sock0 = accept(sock, (struct sockaddr*)&client, (socklen_t*)&len)) == -1) {
+            EMSG("ERROR: failed to accept.\n");
+            goto exit3;
         }
 
         /* Set thread argument */
@@ -90,15 +143,15 @@ int main(int argc, char *argv[])
 
         /* Create a new thread */
         if (pthread_create(&thread[i].tid, NULL, server_thread, &thread[i]) != 0) {
-            perror("pthread_create error");
-            goto exit;
+            EMSG("ERROR: failed to create a thread.\n");
+            close(sock0);
+            goto exit3;
         }
 
         /* Detach the thread to automatically release its resources when the thread terminates */
         pthread_detach(thread[i].tid);
     }
 
-    printf("Exit while loop\n");
     /* Suspend shutdown untill all threads are closed */
     do {
         shutdown = 1;
@@ -111,10 +164,19 @@ int main(int argc, char *argv[])
 
     printf("Shutdown complete\n");
 
-exit:
+
+exit3:
+    if (ctx) {
+        wolfSSL_CTX_free(ctx);  /* Free the wolfSSL context object          */
+    }
+    wolfSSL_Cleanup();          /* Cleanup the wolfSSL environment          */
+
+exit2:
     close(sock);
 
+exit1:
     return 0;
+
 }
 
 /* Thread */
@@ -131,39 +193,54 @@ void *server_thread(void *arg)
     int pnum;
     const char image1[] = "image1.jpg";
     const char image2[] = "image2.jpg";
- 
     char buff[30] = {0};
     FILE *fp;
-    ssize_t send_size;
+    int send_size;
+    WOLFSSL*    ssl = NULL;
+    struct stat stbuf;
 
     printf("thread %d open\n", thread->num);
 
+    /* Create a WOLFSSL object */
+    if ((ssl = wolfSSL_new(thread->ctx)) == NULL) {
+        EMSG("ERROR: failed to create WOLFSSL object.\n");
+        goto exit;
+    }
+
+    /* Attach wolfSSL to the socket */
+    wolfSSL_set_fd(ssl, thread->connd);
+
+    /* Establish TLS connection */
+    if (wolfSSL_accept(ssl) != WOLFSSL_SUCCESS) {
+        EMSG("ERROR: failed to accept WOLFSSL.\n");
+        goto exit;
+    }
+
     while (1) {
         /* Send usage instrunctions to the client */
-        printf("send usage\n");
-        if (send(thread->connd, usage, sizeof(usage), 0) == -1) {
-            perror("send usage error");
+        if (wolfSSL_write(ssl, usage, sizeof(usage)) != sizeof(usage)) {
+            EMSG("ERROR: failed to send usage.\n");
             continue;
         }
 
         /* Receive photo number */
-        if (recv(thread->connd, &pnum, sizeof(pnum), 0) == -1) {
-            perror("receive photo number error");
+        if (wolfSSL_read(ssl, &pnum, sizeof(pnum)) < 0) {
+            EMSG("ERROR: failed to receive photo number.\n");
             continue;
         }
         if (pnum == '0' ||
             pnum == '1' ||
             pnum == '2') {
             /* Send reply message */
-            if (send(thread->connd, rep_success, sizeof(rep_success), 0) == -1) {
-                perror("send reply error");
+            if (wolfSSL_write(ssl, rep_success, sizeof(rep_success)) != sizeof(rep_success)) {
+                EMSG("ERROR: failed to send reply.\n");
                 continue;
             }            
             break;
         } else {
             /* Send reply message */
-            if (send(thread->connd, rep_failure, sizeof(rep_failure), 0) == -1) {
-                perror("send reply error");
+            if (wolfSSL_write(ssl, rep_failure, sizeof(rep_failure)) != sizeof(rep_failure)) {
+                EMSG("ERROR: failed to send reply.\n");
             }            
         }
     }
@@ -171,7 +248,7 @@ void *server_thread(void *arg)
     switch (pnum) {
         case '0':
             *thread->shutdown = 1;
-            break;
+            goto exit;
         case '1':
             strncpy(buff, image1, sizeof(buff));
             break;
@@ -183,31 +260,44 @@ void *server_thread(void *arg)
     }
 
     /* Send the name of the file to be transferred */
-    printf("Send filename\n");
-    if (send(thread->connd, buff, sizeof(buff), 0) == -1) {
-        perror("send filename error");
-        exit(1);
+    if (wolfSSL_write(ssl, buff, sizeof(buff)) != sizeof(buff)) {
+        EMSG("ERROR: failed to send the filename.\n");
+        goto exit;
     }
     
-    printf("Fopen\n");
     /* Open the file to be transferred */
     fp = fopen(buff, "rb");
     if (fp == NULL) {
-        perror("fopen error");
-        exit(1);
+        EMSG("ERROR: failed to open the file.\n");
+        goto exit;
+    }
+
+    /* Send the size of the file to be transferred */
+    pnum = fileno(fp);
+    fstat(pnum, &stbuf);
+    pnum = stbuf.st_size;
+    if (wolfSSL_write(ssl, &pnum, sizeof(pnum)) != sizeof(pnum)) {
+        EMSG("ERROR: failed to send the filesize.\n");
+        goto exit;
     }
 
     /* Read and send data */
-    send_size = send_file(thread->connd, fp);
+    send_size = send_file(ssl, fp);
     if (send_size <= 0) {
         printf("Send failed\n");
     } else {
-        printf("Send success, NumBytes = %ld\n", send_size);
+        printf("Send success, NumBytes = %d\n", send_size);
     }
 
     fclose(fp);
 
+    /* Cleanup after this connection */
+    wolfSSL_shutdown(ssl);
 
+exit:
+    if (ssl) {
+        wolfSSL_free(ssl);      /* Free the wolfSSL object              */
+    }
     close(thread->connd);
     thread->open = 1;
     printf("Thread exit\n");
@@ -215,32 +305,30 @@ void *server_thread(void *arg)
 }
 
 /* Read and send data */
-ssize_t send_file(int sockfd, FILE *fp) 
+int send_file(WOLFSSL *ssl, FILE *fp) 
 {
-    size_t read_size;
-    ssize_t send_size;
-    ssize_t total_size = 0;
+    int read_size;
+    int send_size;
+    int total_size = 0;
     char buff[BUFF_SIZE] = {0};
 
     do {
         /* Read data from the file */
-        read_size = fread(buff, sizeof(char), BUFF_SIZE, fp);
+        read_size = (int)fread(buff, sizeof(char), sizeof(buff), fp);
         if (ferror(fp)) {
-            perror("fread error");
+            EMSG("ERROR: failed to read the file.\n");
             total_size = -1;
             break;
         }
 
         /* Send data */
-        send_size = send(sockfd, buff, read_size, 0);
-        if (send_size == -1)
-        {
-            perror("send error");
+        if ((send_size = wolfSSL_write(ssl, buff, read_size)) != read_size) {
+            EMSG("ERROR: failed to send data.\n");
             total_size = -1;
             break;
         }
 
-        printf("send_size = %ld\n", send_size);
+        printf("send_size = %d\n", send_size);
         total_size += send_size;
 
         memset(buff, 0, BUFF_SIZE);
