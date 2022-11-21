@@ -57,7 +57,7 @@ int main(int argc, char *argv[])
 
     /* Initialize wolfSSL */
     if (wolfSSL_Init() != WOLFSSL_SUCCESS) {
-        EMSG("ERROR: Failed to initialize the library.\n");
+        EMSG("ERROR: Failed to initialize wolfSSL.\n");
         goto exit2;
     }
 
@@ -105,7 +105,6 @@ int main(int argc, char *argv[])
 
     while (1) {
         /* Receive a message from the server */
-        printf("receive usage\n");
         memset(buff, 0, sizeof(buff));
         if (wolfSSL_read(ssl, (void*)buff, sizeof(buff)) < 0) {
             EMSG("ERROR: failed to recieve.\n");
@@ -149,19 +148,11 @@ int main(int argc, char *argv[])
 
     /* Create a file to save received data */
     strcat(recv_fname, fname);
-    fp = fopen(recv_fname, "wb");
-    if (fp == NULL) {
+    if ((fp = fopen(recv_fname, "wb")) == NULL) {
         EMSG("ERROR: failed to open the file.\n");
         goto exit3;
     }
 
-    /* Receive the size of file */
-    if (wolfSSL_read(ssl, (void*)&pnum, sizeof(pnum)) < 0) {
-        EMSG("ERROR: failed to recieve.\n");
-        goto exit3;
-    }
-    printf("File size = %d\n", pnum);
-    
     /* Receive image data */
     recv_size = recv_file(ssl, fp);
     if (recv_size <= 0) {
@@ -198,33 +189,23 @@ int recv_file(WOLFSSL *ssl, FILE *fp)
     int recv_size;
     int total_size = 0;
     char buff[BUFF_SIZE] = {0};
-    int err;
-    char err_msg[80];
 
-    sleep(1);
     do {
         /* Receive file data */
         if ((recv_size = wolfSSL_read(ssl, (void*)buff, sizeof(buff))) < 0) {
-            printf("recv_size = %d\n", recv_size);
-            err = wolfSSL_get_error(ssl, 0);
-            wolfSSL_ERR_error_string(err, err_msg);
-            printf("err = %d, %s\n", err, err_msg);
- //           fprintf(stderr, "wolfSSL_read error = %d\n",
- //               wolfSSL_get_error(ssl, recv_size));
-            
-//            perror("recv error");
-//            total_size = -1;
-//            break;
+            EMSG("ERROR: failed to read.\n");
+            total_size = -1;
+            break;
         }
  
         /* Save data to the file */
         if (fwrite(buff, sizeof(char), recv_size, fp) != (size_t)recv_size) {
-            EMSG("ERROR: failed to write.\n");
+            EMSG("ERROR: failed to write to the file.\n");
             total_size = -1;
             break;
         }
 
-        printf("recv_size = %d\n", recv_size);
+        printf("receiv size = %d\n", recv_size);
  
         memset(buff, 0, BUFF_SIZE);
         

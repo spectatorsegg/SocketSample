@@ -9,7 +9,6 @@
 #include <unistd.h>
 #include <pthread.h>
 #include "config.h"
-#include <sys/stat.h>
 
 /* wolfSSL */
 #include <wolfssl/options.h>
@@ -38,6 +37,7 @@ struct tharg {
 void *server_thread(void *arg);
 int send_file(WOLFSSL *ssl, FILE *fp);
 
+
 /* Main function */
 int main(int argc, char *argv[]) 
 {
@@ -57,15 +57,6 @@ int main(int argc, char *argv[])
         goto exit1;
     }
 
-    /* Set the socket options to use nonblocking I/O */
- #if 0
-    if ((fcntl(sock, F_SETFL, O_NONBLOCK)) == -1) {
-        perror("fcntl error");
-        ret = -1;
-        goto exit;
-    }
-#endif
-
     /* Bind a name to the socket */
     addr.sin_family = AF_INET;
     addr.sin_port = htons(TEST_PORT);
@@ -83,7 +74,7 @@ int main(int argc, char *argv[])
 
      /* Initialize wolfSSL */
     if (wolfSSL_Init() != WOLFSSL_SUCCESS) {
-        EMSG("ERROR: Failed to initialize the library.\n");
+        EMSG("ERROR: Failed to initialize wolfSSL.\n");
         goto exit2;
     }
 
@@ -123,7 +114,7 @@ int main(int argc, char *argv[])
     }
 
     len = sizeof(client);
-    while (shutdown == 0) {
+    while (!shutdown) {
         /* Skip if the maximum number of threads has been reached */
         for (i = 0; (i < MAX_THREADS) && (thread[i].open == 0); i++);
         if (i == MAX_THREADS) {
@@ -160,24 +151,26 @@ int main(int argc, char *argv[])
                 shutdown = 0;
             }
         }
-    } while (shutdown == 0);
+    } while (!shutdown);
 
     printf("Shutdown complete\n");
 
 
 exit3:
     if (ctx) {
-        wolfSSL_CTX_free(ctx);  /* Free the wolfSSL context object          */
+        /* Free the wolfSSL context object */
+        wolfSSL_CTX_free(ctx);
     }
-    wolfSSL_Cleanup();          /* Cleanup the wolfSSL environment          */
+    /* Cleanup the wolfSSL environment */
+    wolfSSL_Cleanup();          
 
 exit2:
     close(sock);
 
 exit1:
     return 0;
-
 }
+
 
 /* Thread */
 void *server_thread(void *arg)
@@ -185,11 +178,11 @@ void *server_thread(void *arg)
     struct tharg *thread = arg;
     const char usage[] =
                 "Select a number.\n"
-                "0: Shutdown\n"
-                "1: Send photo 1\n"
-                "2: Send photo 2\n";
+                " '0': Shutdown\n"
+                " '1': Send photo 1\n"
+                " '2': Send photo 2\n";
     const char rep_success[] = "Request accepted.";
-    const char rep_failure[] = "Incorrect number.";
+    const char rep_failure[] = "Wrong number.";
     int pnum;
     const char image1[] = "image1.jpg";
     const char image2[] = "image2.jpg";
@@ -197,7 +190,6 @@ void *server_thread(void *arg)
     FILE *fp;
     int send_size;
     WOLFSSL*    ssl = NULL;
-    struct stat stbuf;
 
     printf("thread %d open\n", thread->num);
 
@@ -266,18 +258,8 @@ void *server_thread(void *arg)
     }
     
     /* Open the file to be transferred */
-    fp = fopen(buff, "rb");
-    if (fp == NULL) {
+    if ((fp = fopen(buff, "rb")) == NULL) {
         EMSG("ERROR: failed to open the file.\n");
-        goto exit;
-    }
-
-    /* Send the size of the file to be transferred */
-    pnum = fileno(fp);
-    fstat(pnum, &stbuf);
-    pnum = stbuf.st_size;
-    if (wolfSSL_write(ssl, &pnum, sizeof(pnum)) != sizeof(pnum)) {
-        EMSG("ERROR: failed to send the filesize.\n");
         goto exit;
     }
 
@@ -300,7 +282,7 @@ exit:
     }
     close(thread->connd);
     thread->open = 1;
-    printf("Thread exit\n");
+    printf("thread %d exit\n", thread->num);
     pthread_exit(NULL);
 }
 
@@ -328,7 +310,7 @@ int send_file(WOLFSSL *ssl, FILE *fp)
             break;
         }
 
-        printf("send_size = %d\n", send_size);
+        printf("send size = %d\n", send_size);
         total_size += send_size;
 
         memset(buff, 0, BUFF_SIZE);
