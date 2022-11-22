@@ -13,8 +13,6 @@
 /* wolfSSL */
 #include <wolfssl/options.h>
 #include <wolfssl/ssl.h>
-#include <wolfssl/wolfio.h>
-#include <wolfssl/wolfcrypt/error-crypt.h>
 
 /* Definition */
 #define MAX_QUEUE   5
@@ -180,12 +178,15 @@ void *server_thread(void *arg)
                 "Select a number.\n"
                 " '0': Shutdown\n"
                 " '1': Send photo 1\n"
-                " '2': Send photo 2\n";
+                " '2': Send photo 2\n"
+                " '3': Send photo 3\n";
     const char rep_success[] = "Request accepted.";
     const char rep_failure[] = "Wrong number.";
     int pnum;
     const char image1[] = "image1.jpg";
     const char image2[] = "image2.jpg";
+    const char image3[] = "image3.jpg";
+
     char buff[30] = {0};
     FILE *fp;
     int send_size;
@@ -215,14 +216,15 @@ void *server_thread(void *arg)
             continue;
         }
 
-        /* Receive photo number */
+        /* Receive a photo number */
         if (wolfSSL_read(ssl, &pnum, sizeof(pnum)) < 0) {
             EMSG("ERROR: failed to receive photo number.\n");
             continue;
         }
         if (pnum == '0' ||
             pnum == '1' ||
-            pnum == '2') {
+            pnum == '2' ||
+            pnum == '3') {
             /* Send reply message */
             if (wolfSSL_write(ssl, rep_success, sizeof(rep_success)) != sizeof(rep_success)) {
                 EMSG("ERROR: failed to send reply.\n");
@@ -247,6 +249,9 @@ void *server_thread(void *arg)
         case '2':
             strncpy(buff, image2, sizeof(buff));
             break;
+        case '3':
+            strncpy(buff, image3, sizeof(buff));
+            break;
         default:
             break;
     }
@@ -257,7 +262,7 @@ void *server_thread(void *arg)
         goto exit;
     }
     
-    /* Open the file to be transferred */
+    /* Open the file */
     if ((fp = fopen(buff, "rb")) == NULL) {
         EMSG("ERROR: failed to open the file.\n");
         goto exit;
@@ -278,7 +283,8 @@ void *server_thread(void *arg)
 
 exit:
     if (ssl) {
-        wolfSSL_free(ssl);      /* Free the wolfSSL object              */
+        /* Free the wolfSSL object */
+        wolfSSL_free(ssl);
     }
     close(thread->connd);
     thread->open = 1;

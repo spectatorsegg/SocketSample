@@ -13,8 +13,6 @@
 /* wolfSSL */
 #include <wolfssl/options.h>
 #include <wolfssl/ssl.h>
-#include <wolfssl/wolfio.h>
-#include <wolfssl/wolfcrypt/error-crypt.h>
 
 /* Definition */
 #define EMSG(msg)   (fprintf(stderr, msg))
@@ -168,12 +166,15 @@ int main(int argc, char *argv[])
 
 exit3:
     if (ssl) {
-        wolfSSL_free(ssl);      /* Free the wolfSSL object                  */
+        /* Free the wolfSSL object */
+        wolfSSL_free(ssl);
     }
     if (ctx) {
-        wolfSSL_CTX_free(ctx);  /* Free the wolfSSL context object          */
+        /* Free the wolfSSL context object */
+        wolfSSL_CTX_free(ctx);
     }
-    wolfSSL_Cleanup();          /* Cleanup the wolfSSL environment          */
+    /* Cleanup the wolfSSL environment */
+    wolfSSL_Cleanup();
 
 exit2:
     close(sock);

@@ -2,7 +2,7 @@
 
 The server sends an image file selected by the client with TLS.
 
-## Usage example
+## 1. Usage example
 
 ### Server side
 
@@ -12,7 +12,7 @@ The server sends an image file selected by the client with TLS.
 
     $./client
 
-## Bulild Procedure
+## 2. How to make
 
     $./make
 This sample code uses wolfSSL and opencv, so you need to install both before make.
